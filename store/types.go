@@ -27,3 +27,35 @@ type Checkpoint struct {
 	// CRC 为上述字段的校验值，用于识别损坏的检查点。
 	CRC uint32 `json:"crc"`
 }
+
+// Tombstone 记录对象已被删除，使"已删除"与"从未写入"可区分。
+type Tombstone struct {
+	ObjectID  string `json:"object_id"`
+	Digest    string `json:"digest"`
+	TotalSize int64  `json:"total_size"`
+	DeletedAt int64  `json:"deleted_at"`
+	// CRC 为上述字段的校验值，用于识别损坏的墓碑。
+	CRC uint32 `json:"crc"`
+}
+
+// GCPlan 描述一轮待回收的内容，落盘为回收日志。
+// 回收被中断后可依据它继续；损坏的计划必须被拒绝。
+type GCPlan struct {
+	Version   int   `json:"version"`
+	CreatedAt int64 `json:"created_at"`
+	// Dirs 为待清理的对象块目录（对象 ID，来自被中断的删除）。
+	Dirs []string `json:"dirs"`
+	// Blobs 为待回收的内容寻址块（SHA-256 十六进制）。
+	Blobs []string `json:"blobs"`
+	// CRC 为上述字段的校验值。
+	CRC uint32 `json:"crc"`
+}
+
+// GCStats 报告一轮回收的实际结果，重复执行不会重复计数。
+type GCStats struct {
+	// Resumed 为 true 表示本轮接续了上次未完成的回收计划。
+	Resumed        bool
+	DirsRemoved    int
+	BlobsRemoved   int
+	BytesReclaimed int64
+}

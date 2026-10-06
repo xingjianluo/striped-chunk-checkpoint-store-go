@@ -28,3 +28,19 @@ func (s *Store) manifestPath(id string) string {
 func (s *Store) checkpointPath(id string) string {
 	return filepath.Join(s.root, "staging", id+".checkpoint")
 }
+
+// tombstonePath 返回删除墓碑的路径。
+func (s *Store) tombstonePath(id string) string {
+	return filepath.Join(s.root, "objects", id+".tombstone")
+}
+
+// blobPath 返回内容寻址块的路径：
+// <root>/data/blobs/<hh>/<sha256>，按哈希首字节分片。
+func (s *Store) blobPath(hash string) string {
+	return filepath.Join(s.root, "data", "blobs", hash[:2], hash)
+}
+
+// gcPlanPath 返回回收计划（回收日志）的路径。
+func (s *Store) gcPlanPath() string {
+	return filepath.Join(s.root, "gc", "plan.json")
+}

@@ -26,6 +26,12 @@ type Store struct {
 	// locks 为按对象 ID 的互斥锁，序列化同一对象的并发写入，
 	// 保证"先到先得"的确定性提交结果。
 	locks sync.Map
+	// gcMu 协调写入与空间回收：写入方在"建 blob + 建链接"期间持读锁，
+	// 回收方在"检查链接数 + 删 blob"期间持写锁，
+	// 保证正在被引用的数据不会被回收。
+	gcMu sync.RWMutex
+	// applyHook 仅供测试：回收每执行一项删除后回调，返回错误则中断回收。
+	applyHook func(kind string, done int) error
 }
 
 // lockObject 获取对象级互斥锁，返回解锁函数。
@@ -56,6 +62,8 @@ func Open(root string, opts Options) (*Store, error) {
 	dirs := []string{
 		filepath.Join(root, "objects"),
 		filepath.Join(root, "staging"),
+		filepath.Join(root, "data", "blobs"),
+		filepath.Join(root, "gc"),
 	}
 	for i := 0; i < s.stripes; i++ {
 		dirs = append(dirs, filepath.Join(root, "data", fmt.Sprintf("stripe-%d", i)))
@@ -72,6 +80,14 @@ func Open(root string, opts Options) (*Store, error) {
 func (s *Store) Put(id string, r io.Reader) error {
 	unlock := s.lockObject(id)
 	defer unlock()
+	// 已删除对象被重新写入：清理删除残留（墓碑在提交成功后移除）。
+	if _, terr := s.loadTombstone(id); terr == nil {
+		if err := os.Remove(s.manifestPath(id)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	} else if !errors.Is(terr, fs.ErrNotExist) {
+		return terr // 墓碑损坏：明确拒绝，状态由调用方处置
+	}
 	// 已提交：不落盘，仅流式比对内容摘要——一致则幂等成功，否则冲突。
 	if m, err := s.loadManifest(id); err == nil {
 		h := sha256.New()
@@ -187,37 +203,25 @@ func (s *Store) writeAll(id string, r io.Reader, startChunk int, written int64) 
 	return m, nil
 }
 
-// writeChunk 原子写入单个块：临时文件 + rename + fsync。
+// writeChunk 原子写入单个块：内容寻址 blob（去重）+ 对象块硬链接。
+// 全程持有 gcMu 读锁，保证 blob 建立到链接建立之间不会被回收。
 func (s *Store) writeChunk(id string, index int, data []byte) (ChunkMeta, error) {
-	path := s.chunkPath(id, index)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return ChunkMeta{}, err
+	hash := sha256Hex(data)
+	s.gcMu.RLock()
+	err := s.ensureBlob(hash, data)
+	if err == nil {
+		err = s.linkChunk(id, index, hash)
 	}
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	s.gcMu.RUnlock()
 	if err != nil {
 		return ChunkMeta{}, err
 	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		return ChunkMeta{}, err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return ChunkMeta{}, err
-	}
-	if err := f.Close(); err != nil {
-		return ChunkMeta{}, err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return ChunkMeta{}, err
-	}
-	if err := syncDir(filepath.Dir(path)); err != nil {
+	if err := syncDir(filepath.Dir(s.chunkPath(id, index))); err != nil {
 		return ChunkMeta{}, err
 	}
 	return ChunkMeta{
 		Index: index, Stripe: s.stripeFor(index),
-		Length: int64(len(data)), SHA256: sha256Hex(data),
+		Length: int64(len(data)), SHA256: hash,
 	}, nil
 }
 
@@ -246,18 +250,30 @@ func (s *Store) clearChunks(id string) error {
 // Get 返回已提交对象的流式读取器，逐块校验长度与内容。
 // 校验失败时 Read 返回可区分的错误（ErrChunkMissing /
 // ErrChunkLengthMismatch / ErrChecksumMismatch）。
+// 对象已删除返回 ErrObjectDeleted，从未写入返回 ErrObjectNotFound。
 func (s *Store) Get(id string) (io.ReadCloser, error) {
 	m, err := s.loadManifest(id)
 	if err != nil {
+		if errors.Is(err, ErrObjectNotFound) {
+			if derr := s.deletedState(id); derr != nil {
+				return nil, derr
+			}
+		}
 		return nil, err
 	}
 	return &chunkReader{s: s, m: m}, nil
 }
 
 // Verify 全量校验对象并返回可区分的失败原因。
+// 对象已删除返回 ErrObjectDeleted，从未写入返回 ErrObjectNotFound。
 func (s *Store) Verify(id string) error {
 	m, err := s.loadManifest(id)
 	if err != nil {
+		if errors.Is(err, ErrObjectNotFound) {
+			if derr := s.deletedState(id); derr != nil {
+				return derr
+			}
+		}
 		return err
 	}
 	objHash := sha256.New()

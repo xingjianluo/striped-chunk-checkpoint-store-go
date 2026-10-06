@@ -27,6 +27,10 @@ func (s *Store) commitManifest(m *Manifest) error {
 
 	err = os.Link(tmp, final)
 	if err == nil {
+		// 提交成功：对象若曾被删除，清除墓碑。
+		if rerr := s.removeTombstone(m.ObjectID); rerr != nil {
+			return rerr
+		}
 		return syncDir(filepath.Dir(final))
 	}
 	if !errors.Is(err, fs.ErrExist) {
