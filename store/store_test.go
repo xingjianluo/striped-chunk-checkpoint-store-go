@@ -86,9 +86,9 @@ func TestDistinguishableFailures(t *testing.T) {
 	}
 	m, _ := s.loadManifest("obj-b")
 
-	// 1) 块缺失
+	// 1) 块缺失（v2 块的权威位置是 CAS，按清单 Ref 定位物理文件）
 	victim := m.Chunks[2]
-	p := s.chunkPath("obj-b", victim.Index)
+	p := s.chunkPathFor(m, victim)
 	os.Rename(p, p+".bak")
 	err := s.Verify("obj-b")
 	t.Logf("chunk id=%d stripe=%d removed -> verify err=%v", victim.Index, victim.Stripe, err)

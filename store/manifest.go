@@ -44,11 +44,16 @@ func (s *Store) commitManifest(m *Manifest) error {
 		ErrCommitConflict, m.ObjectID)
 }
 
-// loadManifest 读取已提交清单；不存在返回 ErrObjectNotFound。
+// loadManifest 读取已提交清单。
+// 清单不存在但有墓碑 -> ErrObjectDeleted（曾经提交，已被删除）；
+// 清单与墓碑都不存在 -> ErrObjectNotFound（从未提交）。
 func (s *Store) loadManifest(id string) (*Manifest, error) {
 	data, err := os.ReadFile(s.manifestPath(id))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
+			if _, terr := s.loadTombstone(id); terr == nil || errors.Is(terr, ErrObjectDeleted) {
+				return nil, fmt.Errorf("%w: %q", ErrObjectDeleted, id)
+			}
 			return nil, fmt.Errorf("%w: %q", ErrObjectNotFound, id)
 		}
 		return nil, err

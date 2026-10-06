@@ -18,4 +18,8 @@ var (
 	ErrCheckpointCorrupt = errors.New("store: checkpoint corrupt")
 	// ErrCheckpointRegression 恢复位置回退，被拒绝。
 	ErrCheckpointRegression = errors.New("store: checkpoint regression")
+	// ErrObjectDeleted 对象曾经提交但已被删除（与"从未写入"严格区分）。
+	ErrObjectDeleted = errors.New("store: object deleted")
+	// ErrReclaimPlanCorrupt 回收计划损坏 / CRC 不符 / 记录不可信，拒绝执行删除。
+	ErrReclaimPlanCorrupt = errors.New("store: reclaim plan corrupt or untrusted")
 )
